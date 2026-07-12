@@ -21,64 +21,43 @@ jobs:
         run: |
           set -ex
           python3 << 'PYEOF'
-          import re, urllib.request, urllib.parse, subprocess, os, sys
+          import re, urllib.request, subprocess, os, sys
 
-          share_url = os.environ.get("SHARE_URL", "https://cloud.mail.ru/public/yoRE/xPMCpHAup")
+          share_url = os.environ.get("SHARE_URL")
           print(f"Share URL: {share_url}")
 
-          # 提取 share 路径
           share_path = share_url.split("/public/", 1)[1]
           print(f"Share path: {share_path}")
 
-          # 下载页面 HTML
           req = urllib.request.Request(share_url, headers={"User-Agent": "Mozilla/5.0"})
           html = urllib.request.urlopen(req).read().decode("utf-8", errors="ignore")
 
-          # 用正则提取 weblink_get URL
           m = re.search(r'"weblink_get"\s*:\s*\{[^}]*"url"\s*:\s*"([^"]+)"', html)
           if not m:
-              # 尝试数组格式
               m = re.search(r'"weblink_get"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"([^"]+)"', html)
           if not m:
-              print("ERROR: Could not find weblink_get URL in page HTML")
-              # 保存 HTML 以便调试
-              with open("/tmp/page_debug.html", "w") as f:
-                  f.write(html)
-              print("Saved debug HTML to /tmp/page_debug.html")
+              print("ERROR: Could not find weblink_get URL")
               sys.exit(1)
 
           base_url = m.group(1)
-          print(f"Base URL: {base_url}")
-
-          # 构建下载 URL
           download_url = f"{base_url}/{share_path}"
           print(f"Download URL: {download_url}")
 
-          # 下载文件 (跟随重定向)
-          cmd = [
+          result = subprocess.run([
               "curl", "-L", "-o", "/tmp/waves.dmg",
-              "--retry", "5",
-              "--retry-delay", "10",
-              "--connect-timeout", "60",
+              "--retry", "5", "--retry-delay", "10", "--connect-timeout", "60",
               "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
               download_url
-          ]
-          print(f"Running: {' '.join(cmd)}")
-          result = subprocess.run(cmd)
+          ])
           if result.returncode != 0:
-              print(f"curl failed with exit code {result.returncode}")
+              print(f"curl failed: {result.returncode}")
               sys.exit(1)
 
-          # 验证
           size = os.path.getsize("/tmp/waves.dmg")
           print(f"Downloaded: {size} bytes ({size // 1024 // 1024} MB)")
-
           if size < 100_000_000:
-              print("ERROR: File too small, download may have failed")
-              with open("/tmp/waves.dmg", "rb") as f:
-                  print(f.read(500))
+              print("ERROR: File too small")
               sys.exit(1)
-
           print("✅ Download successful!")
           PYEOF
         env:
@@ -87,32 +66,14 @@ jobs:
       - name: Split into chunks
         run: |
           set -ex
-          split -b 1800M -d -a 3 /tmp/waves.dmg "/tmp/waves_part_"
+          mkdir -p /tmp/waves_parts
+          split -b 450M -d -a 3 /tmp/waves.dmg /tmp/waves_parts/waves_part_
           echo "=== Parts ==="
-          ls -lh /tmp/waves_part_*
+          ls -lh /tmp/waves_parts/
 
-      - name: Delete old release if exists
-        continue-on-error: true
-        run: |
-          gh release delete waves-v17 --yes || true
-          git tag -d waves-v17 2>/dev/null || true
-          git push --delete origin waves-v17 2>/dev/null || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Release and Upload
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: waves-v17-download
-          name: Waves Ultimate 17 macOS
-          body: |
-            从 cloud.mail.ru 下载后分片上传。
-
-            合并方法：
-            ```bash
-            cat waves_part_* > waves.dmg
-            hdiutil attach waves.dmg
-            ```
-          files: /tmp/waves_part_*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: waves-v17
+          path: /tmp/waves_parts/waves_part_*
+          retention-days: 7
