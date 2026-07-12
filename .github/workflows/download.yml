@@ -1,55 +1,85 @@
-name: Download to GitHub
+name: Download via Browser
 
 on:
   workflow_dispatch:
     inputs:
-      download_url:
-        description: '下载链接'
+      share_url:
+        description: 'cloud.mail.ru 分享链接'
         required: true
 
 jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: Download file
-        run: |
-          set -ex
-          FILENAME="waves.dmg"
-          echo "=== Downloading from URL ==="
-          wget -q --show-progress -O "$FILENAME" \
-            --header="User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
-            "${{ github.event.inputs.download_url }}" || {
-              echo "wget failed, trying curl..."
-              curl -L -o "$FILENAME" \
-                -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
-                --retry 3 --retry-delay 5 \
-                "${{ github.event.inputs.download_url }}"
-            }
-          echo "=== File info ==="
-          ls -lh "$FILENAME"
-          file "$FILENAME"
-          # Check if it's actually an HTML error page
-          head -c 200 "$FILENAME" | strings | head -5
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Split into parts (<2GB each)
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Download via headless browser
+        run: |
+          python3 << 'PYEOF'
+          import os, glob
+          from playwright.sync_api import sync_playwright
+
+          url = "${{ github.event.inputs.share_url }}"
+          download_dir = "/tmp/downloads"
+          os.makedirs(download_dir, exist_ok=True)
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              context = browser.new_context(accept_downloads=True)
+              page = context.new_page()
+
+              print(f"Opening: {url}")
+              page.goto(url, wait_until="networkidle", timeout=120000)
+
+              # 点击下载按钮
+              print("Clicking download button...")
+              with page.expect_download(timeout=600000) as download_info:
+                  # 找到下载按钮并点击
+                  page.click('button:has-text("Скачать")')
+
+              download = download_info.value
+
+              # 保存文件
+              filename = download.suggested_filename or "waves.dmg"
+              save_path = os.path.join(download_dir, filename)
+              download.save_as(save_path)
+
+              size = os.path.getsize(save_path)
+              print(f"Downloaded: {filename} ({size / 1024 / 1024:.1f} MB)")
+              browser.close()
+          PYEOF
+
+      - name: Verify and split file
         run: |
           set -ex
-          FILENAME="waves.dmg"
-          if [ ! -f "$FILENAME" ]; then
-            echo "ERROR: File not found!"
+          FILE=$(ls -S /tmp/downloads/*.dmg 2>/dev/null | head -1)
+          if [ -z "$FILE" ]; then
+            FILE=$(ls -S /tmp/downloads/* 2>/dev/null | head -1)
+          fi
+          echo "File: $FILE"
+          ls -lh "$FILE"
+
+          FILESIZE=$(stat -c%s "$FILE")
+          echo "Size: $FILESIZE bytes"
+
+          if [ "$FILESIZE" -lt 100000000 ]; then
+            echo "ERROR: File too small, download failed"
+            cat "$FILE" | head -20
             exit 1
           fi
-          FILESIZE=$(stat -c%s "$FILENAME")
-          echo "File size: $FILESIZE bytes"
-          if [ "$FILESIZE" -lt 1000000 ]; then
-            echo "ERROR: File too small, download likely failed"
-            cat "$FILENAME" | head -20
-            exit 1
-          fi
+
           # Split into 1.8GB chunks
-          split -b 1800M -d -a 3 "$FILENAME" "part_"
-          echo "=== Parts created ==="
-          ls -lh part_*
+          split -b 1800M -d -a 3 "$FILE" "/tmp/waves_part_"
+          echo "=== Parts ==="
+          ls -lh /tmp/waves_part_*
 
       - name: Delete old release if exists
         continue-on-error: true
@@ -60,16 +90,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create Release and Upload Parts
+      - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
         with:
           tag_name: waves-v17-download
           name: Waves Ultimate 17 macOS (9.41GB)
           body: |
-            9.41GB，分片下载后合并：
+            从 cloud.mail.ru 下载后分片上传。
+            合并方法：
             ```
-            cat part_* > waves.dmg
+            cat waves_part_* > waves.dmg
             ```
-          files: part_*
+          files: /tmp/waves_part_*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
