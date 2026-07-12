@@ -1,0 +1,47 @@
+name: Download to GitHub
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_url:
+        description: '下载链接'
+        required: true
+      filename:
+        description: '文件名'
+        required: false
+        default: 'Waves Ultimate 17 v26.06.23 U2B macOS.dmg'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download file
+        run: |
+          echo "Downloading: ${{ github.event.inputs.filename }}"
+          curl -L -o "${{ github.event.inputs.filename }}" "${{ github.event.inputs.download_url }}" --retry 3 --retry-delay 5
+          ls -lh "${{ github.event.inputs.filename }}"
+
+      - name: Split into 1.8GB parts
+        run: |
+          FILENAME="${{ github.event.inputs.filename }}"
+          # Split into 1.8GB chunks (under GitHub 2GB limit)
+          split -b 1800M -d -a 3 "$FILENAME" "${FILENAME}.part_"
+          echo "Parts created:"
+          ls -lh ${FILENAME}.part_*
+
+      - name: Create Release and Upload Parts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: waves-v17-download
+          name: Waves Ultimate 17 macOS
+          body: |
+            9.41GB，分片下载后合并：
+            ```
+            cat Waves\ Ultimate\ 17\ v26.06.23\ U2B\ macOS.dmg.part_* > Waves\ Ultimate\ 17\ v26.06.23\ U2B\ macOS.dmg
+            ```
+          files: ${{ github.event.inputs.filename }}.part_*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
