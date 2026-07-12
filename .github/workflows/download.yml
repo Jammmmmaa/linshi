@@ -6,42 +6,69 @@ on:
       download_url:
         description: '下载链接'
         required: true
-      filename:
-        description: '文件名'
-        required: false
-        default: 'Waves Ultimate 17 v26.06.23 U2B macOS.dmg'
 
 jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Download file
         run: |
-          FILENAME="${{ github.event.inputs.filename }}"
-          echo "Downloading: $FILENAME"
-          curl -L -o "$FILENAME" "${{ github.event.inputs.download_url }}" --retry 3 --retry-delay 5
+          set -ex
+          FILENAME="waves.dmg"
+          echo "=== Downloading from URL ==="
+          wget -q --show-progress -O "$FILENAME" \
+            --header="User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+            "${{ github.event.inputs.download_url }}" || {
+              echo "wget failed, trying curl..."
+              curl -L -o "$FILENAME" \
+                -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+                --retry 3 --retry-delay 5 \
+                "${{ github.event.inputs.download_url }}"
+            }
+          echo "=== File info ==="
           ls -lh "$FILENAME"
+          file "$FILENAME"
+          # Check if it's actually an HTML error page
+          head -c 200 "$FILENAME" | strings | head -5
 
-      - name: Split into 1.8GB parts
+      - name: Split into parts (<2GB each)
         run: |
-          FILENAME="${{ github.event.inputs.filename }}"
-          # Split into 1.8GB chunks (under GitHub 2GB limit)
+          set -ex
+          FILENAME="waves.dmg"
+          if [ ! -f "$FILENAME" ]; then
+            echo "ERROR: File not found!"
+            exit 1
+          fi
+          FILESIZE=$(stat -c%s "$FILENAME")
+          echo "File size: $FILESIZE bytes"
+          if [ "$FILESIZE" -lt 1000000 ]; then
+            echo "ERROR: File too small, download likely failed"
+            cat "$FILENAME" | head -20
+            exit 1
+          fi
+          # Split into 1.8GB chunks
           split -b 1800M -d -a 3 "$FILENAME" "part_"
-          echo "Parts created:"
+          echo "=== Parts created ==="
           ls -lh part_*
+
+      - name: Delete old release if exists
+        continue-on-error: true
+        run: |
+          gh release delete waves-v17 --yes || true
+          git tag -d waves-v17 || true
+          git push --delete origin waves-v17 || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release and Upload Parts
         uses: softprops/action-gh-release@v2
         with:
           tag_name: waves-v17-download
-          name: Waves Ultimate 17 macOS
+          name: Waves Ultimate 17 macOS (9.41GB)
           body: |
             9.41GB，分片下载后合并：
             ```
-            cat part_* > Waves_Ultimate_17_v26.06.23_U2B_macOS.dmg
+            cat part_* > waves.dmg
             ```
           files: part_*
         env:
