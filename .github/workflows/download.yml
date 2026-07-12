@@ -12,52 +12,77 @@ jobs:
   download:
     runs-on: ubuntu-latest
     steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Resolve and download
         run: |
           set -ex
-          SHARE_URL="${{ github.event.inputs.share_url }}"
-          echo "Share URL: $SHARE_URL"
+          python3 << 'PYEOF'
+          import re, urllib.request, urllib.parse, subprocess, os, sys
 
-          # 提取 share 路径 (yoRE/xPMCpHAup)
-          SHARE_PATH=$(echo "$SHARE_URL" | grep -oP 'public/\K.*')
-          echo "Share path: $SHARE_PATH"
+          share_url = os.environ.get("SHARE_URL", "https://cloud.mail.ru/public/yoRE/xPMCpHAup")
+          print(f"Share URL: {share_url}")
 
-          # 从页面 HTML 解析 weblink_get 基础 URL
-          PAGE_HTML=$(curl -sL "$SHARE_URL")
-          BASE_URL=$(echo "$PAGE_HTML" | grep -oP '"weblink_get":\{"count":"[^"]+","url":"\K[^"]+' || true)
-          echo "Base URL: $BASE_URL"
+          # 提取 share 路径
+          share_path = share_url.split("/public/", 1)[1]
+          print(f"Share path: {share_path}")
 
-          if [ -z "$BASE_URL" ]; then
-            echo "ERROR: Could not parse weblink_get from page"
-            exit 1
-          fi
+          # 下载页面 HTML
+          req = urllib.request.Request(share_url, headers={"User-Agent": "Mozilla/5.0"})
+          html = urllib.request.urlopen(req).read().decode("utf-8", errors="ignore")
 
-          # 构建下载 URL: base_url + / + share_path
-          # 会得到 301 重定向到真实 CDN 下载地址
-          DOWNLOAD_URL="${BASE_URL}/${SHARE_PATH}"
-          echo "Download URL: $DOWNLOAD_URL"
+          # 用正则提取 weblink_get URL
+          m = re.search(r'"weblink_get"\s*:\s*\{[^}]*"url"\s*:\s*"([^"]+)"', html)
+          if not m:
+              # 尝试数组格式
+              m = re.search(r'"weblink_get"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"([^"]+)"', html)
+          if not m:
+              print("ERROR: Could not find weblink_get URL in page HTML")
+              # 保存 HTML 以便调试
+              with open("/tmp/page_debug.html", "w") as f:
+                  f.write(html)
+              print("Saved debug HTML to /tmp/page_debug.html")
+              sys.exit(1)
 
-          # 下载 (跟随 301 重定向)
-          curl -L -o /tmp/waves.dmg \
-            --retry 5 \
-            --retry-delay 10 \
-            --connect-timeout 60 \
-            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36" \
-            "$DOWNLOAD_URL"
+          base_url = m.group(1)
+          print(f"Base URL: {base_url}")
 
-          ls -lh /tmp/waves.dmg
+          # 构建下载 URL
+          download_url = f"{base_url}/{share_path}"
+          print(f"Download URL: {download_url}")
 
-          # 验证文件大小
-          FILESIZE=$(stat -c%s /tmp/waves.dmg)
-          echo "Size: $FILESIZE bytes ($(( FILESIZE / 1024 / 1024 )) MB)"
+          # 下载文件 (跟随重定向)
+          cmd = [
+              "curl", "-L", "-o", "/tmp/waves.dmg",
+              "--retry", "5",
+              "--retry-delay", "10",
+              "--connect-timeout", "60",
+              "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+              download_url
+          ]
+          print(f"Running: {' '.join(cmd)}")
+          result = subprocess.run(cmd)
+          if result.returncode != 0:
+              print(f"curl failed with exit code {result.returncode}")
+              sys.exit(1)
 
-          if [ "$FILESIZE" -lt 100000000 ]; then
-            echo "ERROR: File too small ($FILESIZE bytes), download failed"
-            head -c 500 /tmp/waves.dmg
-            exit 1
-          fi
+          # 验证
+          size = os.path.getsize("/tmp/waves.dmg")
+          print(f"Downloaded: {size} bytes ({size // 1024 // 1024} MB)")
 
-          echo "✅ Download successful!"
+          if size < 100_000_000:
+              print("ERROR: File too small, download may have failed")
+              with open("/tmp/waves.dmg", "rb") as f:
+                  print(f.read(500))
+              sys.exit(1)
+
+          print("✅ Download successful!")
+          PYEOF
+        env:
+          SHARE_URL: ${{ github.event.inputs.share_url }}
 
       - name: Split into chunks
         run: |
