@@ -12,80 +12,56 @@ jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve download URL via API
-        id: resolve
+      - name: Resolve and download
         run: |
           set -ex
           SHARE_URL="${{ github.event.inputs.share_url }}"
           echo "Share URL: $SHARE_URL"
 
-          # 提取 share ID (yoRE/xPMCpHAup)
-          SHARE_ID=$(echo "$SHARE_URL" | grep -oP 'public/\K.*')
-          echo "Share ID: $SHARE_ID"
+          # 提取 share 路径 (yoRE/xPMCpHAup)
+          SHARE_PATH=$(echo "$SHARE_URL" | grep -oP 'public/\K.*')
+          echo "Share path: $SHARE_PATH"
 
           # 从页面 HTML 解析 weblink_get 基础 URL
-          BASE_URL=$(curl -sL -A '' "$SHARE_URL" | grep -oP '"weblink_get":\[\{"count":1,"url":"\K[^"]+' || true)
-          echo "Base URL from HTML: $BASE_URL"
+          PAGE_HTML=$(curl -sL "$SHARE_URL")
+          BASE_URL=$(echo "$PAGE_HTML" | grep -oP '"weblink_get":\{"count":"[^"]+","url":"\K[^"]+' || true)
+          echo "Base URL: $BASE_URL"
 
           if [ -z "$BASE_URL" ]; then
-            echo "HTML parse failed, trying API v2 dispatcher..."
-            BASE_URL=$(curl -s "https://cloud.mail.ru/api/v2/dispatcher?api=2" \
-              | grep -oP '"weblink_get":\[\{"count":"[^"]+","url":"\K[^"]+')
-            echo "Base URL from dispatcher: $BASE_URL"
-          fi
-
-          if [ -z "$BASE_URL" ]; then
-            echo "ERROR: Could not resolve base URL"
+            echo "ERROR: Could not parse weblink_get from page"
             exit 1
           fi
 
-          # 获取 download token
-          TOKEN=$(curl -s "https://cloud.mail.ru/api/v2/tokens/download" | grep -oP '"token":"\K[^"]+')
-          echo "Token: $TOKEN"
-
-          if [ -z "$TOKEN" ]; then
-            echo "ERROR: Could not get download token"
-            exit 1
-          fi
-
-          # 构建直链
-          ENCODED_ID=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$SHARE_ID'))")
-          DOWNLOAD_URL="${BASE_URL}/${ENCODED_ID}?key=${TOKEN}"
+          # 构建下载 URL: base_url + / + share_path
+          # 会得到 301 重定向到真实 CDN 下载地址
+          DOWNLOAD_URL="${BASE_URL}/${SHARE_PATH}"
           echo "Download URL: $DOWNLOAD_URL"
 
-          # 写入 output
-          echo "url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
-
-      - name: Download file
-        run: |
-          set -ex
-          URL="${{ steps.resolve.outputs.url }}"
-          echo "Downloading from: $URL"
-
+          # 下载 (跟随 301 重定向)
           curl -L -o /tmp/waves.dmg \
             --retry 5 \
             --retry-delay 10 \
-            --connect-timeout 30 \
-            -H "User-Agent: Mozilla/5.0" \
-            "$URL"
+            --connect-timeout 60 \
+            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36" \
+            "$DOWNLOAD_URL"
 
           ls -lh /tmp/waves.dmg
 
+          # 验证文件大小
           FILESIZE=$(stat -c%s /tmp/waves.dmg)
-          echo "Size: $FILESIZE bytes"
+          echo "Size: $FILESIZE bytes ($(( FILESIZE / 1024 / 1024 )) MB)"
 
           if [ "$FILESIZE" -lt 100000000 ]; then
-            echo "ERROR: File too small, download may have failed"
+            echo "ERROR: File too small ($FILESIZE bytes), download failed"
             head -c 500 /tmp/waves.dmg
             exit 1
           fi
 
-          echo "Download successful!"
+          echo "✅ Download successful!"
 
       - name: Split into chunks
         run: |
           set -ex
-          # Split into 1.8GB chunks for GitHub Release (2GB limit)
           split -b 1800M -d -a 3 /tmp/waves.dmg "/tmp/waves_part_"
           echo "=== Parts ==="
           ls -lh /tmp/waves_part_*
