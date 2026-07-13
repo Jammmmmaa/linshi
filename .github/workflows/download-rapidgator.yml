@@ -1,0 +1,147 @@
+name: Download Rapidgator
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Rapidgator 文件链接'
+        required: true
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download from Rapidgator
+        run: |
+          set -ex
+          python3 << 'PYEOF'
+          import urllib.request, urllib.parse, json, subprocess, os, sys
+
+          file_url = os.environ.get("FILE_URL")
+          rg_email = os.environ.get("RG_EMAIL", "")
+          rg_password = os.environ.get("RG_PASSWORD", "")
+
+          print(f"File URL: {file_url}")
+
+          # === Step 1: Login (if credentials provided) ===
+          token = ""
+          if rg_email and rg_password:
+              print("Logging in to Rapidgator...")
+              login_url = f"https://rapidgator.net/api/v2/user/login?login={urllib.parse.quote(rg_email)}&password={urllib.parse.quote(rg_password)}"
+              req = urllib.request.Request(login_url)
+              resp = json.loads(urllib.request.urlopen(req).read().decode())
+              print(f"Login response: status={resp.get('status')}")
+              token = resp.get("response", {}).get("token", "")
+              if not token:
+                  print("ERROR: Login failed, no token returned")
+                  print(json.dumps(resp, indent=2))
+                  sys.exit(1)
+              print(f"Token: {token[:20]}...")
+          else:
+              print("WARNING: No credentials provided, trying anonymous mode")
+
+          # === Step 2: Check file link ===
+          print("Checking file link...")
+          check_params = {"url": file_url}
+          if token:
+              check_params["token"] = token
+          check_url = "https://rapidgator.net/api/v2/file/check_link?" + urllib.parse.urlencode(check_params)
+          req = urllib.request.Request(check_url)
+          resp = json.loads(urllib.request.urlopen(req).read().decode())
+          print(f"Check response: status={resp.get('status')}")
+
+          file_info = resp.get("response", [])
+          if not file_info:
+              print("ERROR: Could not get file info")
+              print(json.dumps(resp, indent=2))
+              sys.exit(1)
+
+          filename = file_info[0].get("filename", "rapidgator_file")
+          file_size = file_info[0].get("size", 0)
+          print(f"Filename: {filename}")
+          print(f"Size: {file_size} bytes ({file_size // 1024 // 1024} MB)")
+
+          # === Step 3: Get download URL ===
+          print("Getting download URL...")
+          dl_params = {"url": file_url}
+          if token:
+              dl_params["token"] = token
+          dl_url = "https://rapidgator.net/api/v2/file/download?" + urllib.parse.urlencode(dl_params)
+          req = urllib.request.Request(dl_url)
+          resp = json.loads(urllib.request.urlopen(req).read().decode())
+          print(f"Download API response: status={resp.get('status')}")
+
+          download_url = resp.get("response", {}).get("download_url", "")
+          if not download_url:
+              print("ERROR: Could not get download URL")
+              print(json.dumps(resp, indent=2))
+              if resp.get("status") == 403 or "captcha" in str(resp).lower():
+                  print("HINT: Free users have download limits. Wait and try again, or use a premium account.")
+              sys.exit(1)
+
+          print(f"Download URL: {download_url[:80]}...")
+
+          # === Step 4: Download ===
+          print(f"Downloading {filename}...")
+          safe_filename = filename.replace("/", "_").replace("\\", "_")
+          save_path = f"/tmp/{safe_filename}"
+
+          result = subprocess.run([
+              "curl", "-L", "-o", save_path,
+              "--retry", "5", "--retry-delay", "30", "--connect-timeout", "60",
+              "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+              download_url
+          ])
+          if result.returncode != 0:
+              print(f"curl failed: {result.returncode}")
+              sys.exit(1)
+
+          actual_size = os.path.getsize(save_path)
+          print(f"Downloaded: {actual_size} bytes ({actual_size // 1024 // 1024} MB)")
+
+          if actual_size < 1000:
+              print("ERROR: File too small, download likely failed")
+              with open(save_path, "rb") as f:
+                  print(f.read(500))
+              sys.exit(1)
+
+          print(f"✅ Download successful: {filename}")
+
+          # 输出文件路径给后续步骤
+          with open("/tmp/download_info.txt", "w") as f:
+              f.write(f"FILENAME={safe_filename}\n")
+              f.write(f"SIZE={actual_size}\n")
+          PYEOF
+        env:
+          FILE_URL: ${{ github.event.inputs.file_url }}
+          RG_EMAIL: ${{ secrets.RG_EMAIL }}
+          RG_PASSWORD: ${{ secrets.RG_PASSWORD }}
+
+      - name: Read download info
+        id: info
+        run: |
+          source /tmp/download_info.txt
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "File: $FILENAME ($SIZE bytes)"
+
+      - name: Split into chunks
+        run: |
+          set -ex
+          FILENAME="${{ steps.info.outputs.filename }}"
+          mkdir -p /tmp/parts
+          split -b 450M -d -a 3 "/tmp/$FILENAME" "/tmp/parts/file_part_"
+          echo "=== Parts ==="
+          ls -lh /tmp/parts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.info.outputs.filename }}
+          path: /tmp/parts/file_part_*
+          retention-days: 7
