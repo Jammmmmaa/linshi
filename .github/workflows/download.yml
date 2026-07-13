@@ -1,4 +1,4 @@
-name: Download Waves
+name: Download cloud.mail.ru
 
 on:
   workflow_dispatch:
@@ -6,7 +6,6 @@ on:
       share_url:
         description: 'cloud.mail.ru 分享链接'
         required: true
-        default: 'https://cloud.mail.ru/public/yoRE/xPMCpHAup'
 
 jobs:
   download:
@@ -44,7 +43,7 @@ jobs:
           print(f"Download URL: {download_url}")
 
           result = subprocess.run([
-              "curl", "-L", "-o", "/tmp/waves.dmg",
+              "curl", "-L", "-o", "/tmp/downloaded_file",
               "--retry", "5", "--retry-delay", "10", "--connect-timeout", "60",
               "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
               download_url
@@ -53,7 +52,7 @@ jobs:
               print(f"curl failed: {result.returncode}")
               sys.exit(1)
 
-          size = os.path.getsize("/tmp/waves.dmg")
+          size = os.path.getsize("/tmp/downloaded_file")
           print(f"Downloaded: {size} bytes ({size // 1024 // 1024} MB)")
           if size < 100_000_000:
               print("ERROR: File too small")
@@ -66,14 +65,14 @@ jobs:
       - name: Split into chunks
         run: |
           set -ex
-          mkdir -p /tmp/waves_parts
-          split -b 450M -d -a 3 /tmp/waves.dmg /tmp/waves_parts/waves_part_
+          mkdir -p /tmp/parts
+          split -b 450M -d -a 3 /tmp/downloaded_file /tmp/parts/file_part_
           echo "=== Parts ==="
-          ls -lh /tmp/waves_parts/
+          ls -lh /tmp/parts/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: waves-v17
-          path: /tmp/waves_parts/waves_part_*
+          name: cloud-mail-ru-download
+          path: /tmp/parts/file_part_*
           retention-days: 7
